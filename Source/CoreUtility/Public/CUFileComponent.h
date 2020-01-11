@@ -4,13 +4,13 @@
 #pragma once
 
 #include "Components/ActorComponent.h"
-#include "FileUtilityComponent.generated.h"
+#include "CUFileComponent.generated.h"
 
 /**
-*
+* Convenience component to save/load data from files
 */
 UCLASS(ClassGroup = "Utility", meta = (BlueprintSpawnableComponent))
-class COREUTILITY_API UFileUtilityComponent : public UActorComponent
+class COREUTILITY_API UCUFileComponent : public UActorComponent
 {
 	GENERATED_UCLASS_BODY()
 public:
@@ -27,9 +27,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = FileUtility)
 	FString ProjectSavedDirectory();
 
+	/** External storage in android context, otherwise uses project saved directory*/
+	UFUNCTION(BlueprintPure, Category = FileUtility)
+	FString ExternalSaveDirectory();
+
 	/** Save array of bytes to file at specified directory */
 	UFUNCTION(BlueprintCallable, Category = FileUtility)
-	bool SaveBytesToFile(const TArray<uint8>& Bytes, const FString& Directory, const FString& FileName);
+	bool SaveBytesToFile(const TArray<uint8>& Bytes, const FString& Directory, const FString& FileName, bool bLogSave = false);
 
 	/** Read array of bytes from file at specified directory */
 	UFUNCTION(BlueprintCallable, Category = FileUtility)

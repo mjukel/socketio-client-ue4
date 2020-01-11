@@ -13,6 +13,8 @@ Socket.IO Lib uses _asio_, _rapidjson_, and _websocketpp_. SIOJson is originally
 
 Recommended socket.io server version: 1.4+.
 
+*Tip: This is a sizeable readme, quickly find your topic with ```Ctrl+F``` and a search term e.g. namespaces*
+
 ### Contribute! Current Main Issues:
 
 Current platform issues:
@@ -35,11 +37,15 @@ HTTPS currently not yet supported
  ### Via Unreal Engine Marketplace (helps support plugin development and maintenance)
  
  Available at this link: [Socket.IO Client - Marketplace](https://www.unrealengine.com/marketplace/socket-io-client)
- 
- ### Optional Plugin Enabled Check
- 5. If your plugin isn't enabled for whatever reason you can enable the plugin via Edit->Plugins. Scroll down to Project->Networking. Click Enabled.
- 6. Restart the Editor and open your project again. Plugin is now ready to use.
 
+ ### Via Git clone
+
+ 1. Create new or choose project.
+ 2. Browse to your project folder (typically found at Documents/Unreal Project/{Your Project Root})
+ 3. Create a *Plugins* in your project root folder and use that path for step 4. command.
+ 4. Git clone. Repository uses submodules, so recommended command is:
+ 
+```git clone https://github.com/getnamo/socketio-client-ue4.git --recurse-submodules```
 
 ## Example Project - Chat
 
@@ -57,7 +63,7 @@ By default the component will auto connect *on begin play* to your default addre
 
 If you want to connect at your own time, you change the default variable *Should Auto Connect* to false and then call *Connect* with your address
 
-Call *Bind Event* for each event you wish the client to subscribe, e.g. 'chat message'
+Call *Bind Event* for each event you wish the client to subscribe, e.g. 'chat message' (NB: [Bind Event to Function](https://github.com/getnamo/socketio-client-ue4#binding-events-to-functions) is the recommended route once you're comfortable with how the plugin works)
 
 If you expect to receive events, select your component and in the Details pane press the + to add an 'OnEvent' event to your event graph
 
@@ -109,6 +115,12 @@ But you can make a custom type and emit it or nest it inside other *SIOJsonValue
 Socket.IO spec supports raw binary data types and these should be capable of being mixed in with other JSON types as usual. This plugin supports binaries as a first class citizen in blueprints and any arrays of bytes can be embedded and decoded in the chain as expected.
 
 ![IMG](http://i.imgur.com/PqxEJqI.png)
+
+Since v1.2.6 binaries (byte arrays) are fully supported inside structs as well.
+
+#### Binary to base64 string fallback (since v1.2.6)
+
+If you encode a ```SIOJsonValue``` or ```SIOJsonObject``` to JSON string (i.e. not using socket.io protocol for transmission) then binaries will get encoded in base64. Conversely passing in a ```SIOJsonValue``` of string type for decoding into a binary target (e.g. ```Get Binary Field```) will attempt base64 decoding of that string to allow for non-socket.io protocol fallback. Keep in mind that base64 encoding has a 33% overhead (6/8 useful bits).
 
 ### Decoding Responses
 
@@ -234,6 +246,38 @@ Instead of using the event graph and comparing strings, you can bind an event di
 
 ![IMG](http://i.imgur.com/7fA1qca.png)
 
+#### Receiving Events on non-game thread
+
+Since v1.1.0 use ```Bind Event to Function``` and change the thread override option to ```Use Network Thread```.
+
+![](https://user-images.githubusercontent.com/542365/69472108-f95c1280-0d5a-11ea-9667-579b22d77ac3.png)
+
+NB: You cannot make or destroy uobjects on non-gamethreads and be mindful of your access patterns across threads to ensure you don't get a race condition. See https://github.com/getnamo/socketio-client-ue4#blueprint-multithreading for other types of threading utility.
+
+
+### Namespaces
+
+Before v1.2.3 you can only join namespaces via using ```Emit``` and ```Bind Event``` with a namespace specified. This will auto-join your namespace of choice upon calling either function.
+
+![Example join emit](https://i.imgur.com/9rOy5Bp.png)
+
+A good place to bind your namespace functions is using the dedicated namespace connected/disconnected events
+
+![namespace events](https://i.imgur.com/ZyF41j4.png)
+
+Below is an example of binding a namespace event when you've connected to it. Keep in mind you'd need to join the namespace for this event to get bound and you can bind it elsewhere e.g. on beginplay instead if preferred.
+
+![namespace bind event](https://i.imgur.com/yWTOLB5.png)
+
+Since v1.2.3 you can now also join and leave a namespace explicitly using ```Join Namespace``` and ```Leave Namespace``` functions.
+
+![join and leave namespaces](https://i.imgur.com/bqBSp1q.png)
+
+### Rooms
+
+The Rooms functionality is solely based on server implementation, see Socket.IO api for details: https://socket.io/docs/rooms-and-namespaces/#Rooms
+
+Generally speaking you can have some kind of event to emit to your server specifying the unreal client wants to join or leave a room and then the server would handle that request for you. If you wanted to emit a message to a specific user in a room you'd need a way to get a list of possible users (e.g. get the list on joining the room or via a callback). Then selecting a user from the list and passing their id along with desired data in an emit call to the server which would forward the data to the user in the room you've joined.
 
 ### Complex Connect
 
@@ -268,6 +312,73 @@ Game Instances do *not* have actor owners and therefore cannot register and init
 #### Note on Emit with Graph Callback
 
 Non actor-owners such as Game Instances cannot receive the graph callbacks due to invalid world context. This only affects this one callback method, other methods work as usual.
+
+## CoreUtility
+
+Plugin contains the CoreUtility module with a variety of useful C++ and blueprint utilities.
+
+#### CUFileComponent
+
+Provides and easy way to save/load files to common project directories. Example usecase: Encode a received message to JSON and pass the bytes in to ```SaveBytesToFile``` to store your response.
+
+See https://github.com/getnamo/socketio-client-ue4/blob/master/Source/CoreUtility/Public/CUFileComponent.h for details.
+
+#### CULambdaRunnable
+
+A wrapper for simple multi-threading in C++. Used all over the plugin to handle threading with lambda captured scopes and simpler latent structs for bp calls. Below is an example of a call to a background thread and return to gamethread:
+
+```c++
+//Assuming you're in game thread
+FCULambdaRunnable::RunLambdaOnBackGroundThread([]
+{
+	//Now you're in a background thread
+	//... do some calculation and let's callback a result
+	int SomeResult;
+	FCULambdaRunnable::RunShortLambdaOnGameThread([SomeResult]
+	{
+		//You're back to the game thread
+		//... display or do something with the result safely
+	});
+});
+```
+
+See https://github.com/getnamo/socketio-client-ue4/blob/master/Source/CoreUtility/Public/CULambdaRunnable.h for full API.
+
+For blueprint multi-threading see https://github.com/getnamo/socketio-client-ue4#blueprint-multithreading.
+
+#### CUMeasureTimer
+
+Static string tagged measurement of durations. Useful for sprinkling your code with duration messages for optimization. CUBlueprintLibrary exposes this utility to blueprint.
+
+See https://github.com/getnamo/socketio-client-ue4/blob/master/Source/CoreUtility/Public/CUBlueprintLibrary.h for details.
+
+#### CUBlueprintLibrary
+
+Global blueprint utilities.
+- Conversions: String<->Bytes, Texture2D<->Bytes, Opus<->Wav, Wav<->Soundwave
+- Time string
+- Unique ID
+- Measurement timers based on CUMeasureTimer
+- Blueprint multithreading calls
+
+##### Blueprint Multithreading
+
+Enables easy calling of blueprint functions on background threads and returning back to the game thread to deal with the results. This enables long running operations to not block the game thread while they work.
+
+Two variants are available as of v1.2.8: ```Call Function On Thread``` and ```Call Function on Thread Graph Return```. Generally the latent variant is recommended for easier function chaining and it will always return on the game thread when finished.
+
+In the example below we use the latent variant to call two background tasks in succession, return to read the result on the game thread and measure the overall time taken.
+
+[![latent multithreading](https://i.imgur.com/ryORGF5.png)](https://i.imgur.com/G4ZPtyt.mp4)
+(click image to see video of performance)
+
+The first task prepares an array with a million floats, the second sums them up. This should take ~1 sec to run, but from the video above you can see that it doesn't block the game thread at all. We use class member variables to pass data between threads. It's important to only have one function modifying the same data at any time and you cannot make or destroy UObjects on background threads so it may be necessary to callback to the gamethread to do allocations if you use UObjects.
+
+#### CUOpusCoder
+
+Standalone opus coder that doesn't depend on the online subsystem. Useful for custom VOIP solutions.
+
+See https://github.com/getnamo/socketio-client-ue4/blob/master/Source/CoreUtility/Public/CUOpusCoder.h for details.
 
 ## How to use - C++
 
@@ -313,7 +424,7 @@ To connect simply change your address, the component will auto-connect on compon
 USocketIOClientComponent* SIOClientComponent; //get a reference or add as subobject in your actor
 
 //the component will autoconnect, but you may wish to change the url before it does that via
-SIOClientComponent->AddressAndPort = FString("http://127.0.0.1:3000"); //change your address
+SIOClientComponent->AddressAndPort = TEXT("http://127.0.0.1:3000"); //change your address
 ```
 
 You can also connect at your own time by disabling auto-connect and connecting either to the default address or a custom one
@@ -325,7 +436,7 @@ SIOClientComponent->Connect();
 
 //You can also easily disconnect at some point, reconnect to another address
 SIOClientComponent->Disconnect();
-SIOClientComponent->Connect(FString("http://127.0.0.1:3000"));
+SIOClientComponent->Connect(TEXT("http://127.0.0.1:3000"));
 ```
 
 ### Receiving Events
@@ -333,7 +444,7 @@ SIOClientComponent->Connect(FString("http://127.0.0.1:3000"));
 To receive events call _OnNativeEvent_ and pass in your expected event name and callback lambda or function with ```void(const FString&, const TSharedPtr<FJsonValue>&)``` signature. Optionally pass in another FString to specify namespace, omit if not using a namespace (default ```TEXT("/")```). 
 
 ```c++
-SIOClientComponent->OnNativeEvent(FString("MyEvent"), [](const FString& Event, const TSharedPtr<FJsonValue>& Message)
+SIOClientComponent->OnNativeEvent(TEXT("MyEvent"), [](const FString& Event, const TSharedPtr<FJsonValue>& Message)
 {
 	//Called when the event is received. We can e.g. log what we got
 	UE_LOG(LogTemp, Log, TEXT("Received: %s"), *USIOJConvert::ToJsonString(Message));
@@ -350,10 +461,10 @@ In C++ you can use *EmitNative*, *EmitRaw*, or *EmitRawBinary*. *EmitNative* is 
 
 #### String
 
-Emit an FString. Note that *FString(TEXT("yourString"))* is recommended if you have performance concerns due to internal conversion from ```char*```
+Emit an FString (or TEXT() macro).
 
 ```c++
-SIOClientComponent->EmitNative(FString("nativeTest"), FString("hi"));
+SIOClientComponent->EmitNative(TEXT("nativeTest"), TEXT("hi"));
 ```
 
 #### Number
@@ -361,7 +472,7 @@ SIOClientComponent->EmitNative(FString("nativeTest"), FString("hi"));
 Emit a double
 
 ```c++
-SIOClientComponent->EmitNative(FString("nativeTest"), -3.5f);
+SIOClientComponent->EmitNative(TEXT("nativeTest"), -3.5f);
 ```
 
 #### Boolean
@@ -369,7 +480,7 @@ SIOClientComponent->EmitNative(FString("nativeTest"), -3.5f);
 Emit a raw boolean
 
 ```c++
-SIOClientComponent->EmitNative(FString("nativeTest"), true);
+SIOClientComponent->EmitNative(TEXT("nativeTest"), true);
 ```
 
 #### Binary or raw data
@@ -383,13 +494,13 @@ Buffer.Add(0x69);
 Buffer.Add(0x21);
 Buffer.Add(0x00);
 
-SIOClientComponent->EmitNative(FString("nativeTest"), Buffer);
+SIOClientComponent->EmitNative(TEXT("nativeTest"), Buffer);
 ```
 
 or
 
 ```c++
-SIOComponent->EmitRawBinary(FString("myBinarySendEvent"), Buffer.GetData(), Buffer.Num());
+SIOComponent->EmitRawBinary(TEXT("myBinarySendEvent"), Buffer.GetData(), Buffer.Num());
 ```
 
 #### FJsonObject - Simple
@@ -399,9 +510,9 @@ Option 1 - Shorthand
 ```c++
 //Basic one field object e.g. {"myKey":"myValue"}
 auto JsonObject = USIOJConvert::MakeJsonObject();								
-JsonObject->SetStringField(FString("myKey"), FString("myValue"));
+JsonObject->SetStringField(TEXT("myKey"), TEXT("myValue"));
 
-SIOClientComponent->EmitNative(FString("nativeTest"), JsonObject);
+SIOClientComponent->EmitNative(TEXT("nativeTest"), JsonObject);
 ```
 
 Option 2 - Standard
@@ -417,17 +528,17 @@ A nested example using various methods
 ```c++
 //All types, nested
 TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);						//make object option2
-JsonObject->SetBoolField(FString("myBool"), false);
-JsonObject->SetStringField(FString("myString"), FString("Socket.io is easy"));
-JsonObject->SetNumberField(FString("myNumber"), 9001);
+JsonObject->SetBoolField(TEXT("myBool"), false);
+JsonObject->SetStringField(TEXT("myString"), TEXT("Socket.io is easy"));
+JsonObject->SetNumberField(TEXT("myNumber"), 9001);
 
-JsonObject->SetField(FString("myBinary1"), USIOJConvert::ToJsonValue(Buffer));				//binary option1 - shorthand
-JsonObject->SetField(FString("myBinary2"), MakeShareable(new FJsonValueBinary(Buffer)));	//binary option2
+JsonObject->SetField(TEXT("myBinary1"), USIOJConvert::ToJsonValue(Buffer));				//binary option1 - shorthand
+JsonObject->SetField(TEXT("myBinary2"), MakeShareable(new FJsonValueBinary(Buffer)));	//binary option2
 
-JsonObject->SetArrayField(FString("myArray"), ArrayValue);
-JsonObject->SetObjectField(FString("myNestedObject"), SmallObject);
+JsonObject->SetArrayField(TEXT("myArray"), ArrayValue);
+JsonObject->SetObjectField(TEXT("myNestedObject"), SmallObject);
 
-SIOClientComponent->EmitNative(FString("nativeTest"), JsonObject);
+SIOClientComponent->EmitNative(TEXT("nativeTest"), JsonObject);
 ```
 
 #### Callback Example
@@ -437,13 +548,13 @@ Below is an example of emitting a simple object with the server using the passed
 ```c++	
 //Make an object {"myKey":"myValue"}
 TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
-JsonObject->SetStringField(FString("myKey"), FString("myValue"));
+JsonObject->SetStringField(TEXT("myKey"), TEXT("myValue"));
 
 //Show what we emitted
 UE_LOG(LogTemp, Log, TEXT("1) Made a simple object and emitted: %s"), *USIOJConvert::ToJsonString(JsonObject));
 
 //Emit event "callbackTest" expecting an echo callback with the object we sent
-SIOClientComponent->EmitNative(FString("callbackTest"), JsonObject, [&](auto Response)
+SIOClientComponent->EmitNative(TEXT("callbackTest"), JsonObject, [&](auto Response)
 {
 	//Response is an array of JsonValues, in our case we expect an object response, grab first element as an object.
 	auto Message = Response[0]->AsObject();
@@ -477,11 +588,11 @@ struct FTestCppStruct
 ```c++
 //Set your struct variables
 FTestCppStruct TestStruct;
-TestStruct.Name = FString("George");
+TestStruct.Name = TEXT("George");
 TestStruct.Index = 5;
 TestStruct.SomeNumber = 5.123f;
 
-SIOClientComponent->EmitNative(FString("callbackTest"),  FTestCppStruct::StaticStruct(), &TestStruct, [&](auto Response)
+SIOClientComponent->EmitNative(TEXT("callbackTest"),  FTestCppStruct::StaticStruct(), &TestStruct, [&](auto Response)
 {
 	auto Message = Response[0]->AsObject();
 
@@ -536,7 +647,7 @@ void USIOTestGameInstance::Init()
 			UE_LOG(LogTemp, Log, TEXT("Received: %s"), *USIOJConvert::ToJsonString(Message));
 		});
 
-	Socket->Emit(TEXT("MyEmit"), FString("hi"));
+	Socket->Emit(TEXT("MyEmit"), TEXT("hi"));
 }
 
 void USIOTestGameInstance::Shutdown()

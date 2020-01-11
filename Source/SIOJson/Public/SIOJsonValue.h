@@ -7,6 +7,7 @@
 #pragma once
 
 #include "Runtime/Json/Public/Dom/JsonValue.h"
+#include "Runtime/Core/Public/Misc/Base64.h"
 #include "SIOJsonValue.generated.h"
 
 class USIOJsonObject;
@@ -37,7 +38,8 @@ public:
 
 	virtual bool TryGetString(FString& OutString) const override 
 	{
-		OutString = FString::FromHexBlob(Value.GetData(), Value.Num());	//encode the binary into the string directly
+		//OutString = FString::FromHexBlob(Value.GetData(), Value.Num());	//HEX encoding
+		OutString = FBase64::Encode(Value);									//Base64 encoding
 		return true;
 	}
 	virtual bool TryGetNumber(double& OutDouble) const override 
@@ -147,8 +149,8 @@ class SIOJSON_API USIOJsonValue : public UObject
 	UFUNCTION(BlueprintCallable, Category = "SIOJ|Json")
 	USIOJsonObject* AsObject();
 
-	//todo: add basic binary e.g. tarray<byte>
-	UFUNCTION(BlueprintCallable, Category = "SIOJ|Json")
+	//Convert message to binary data
+	UFUNCTION(BlueprintPure, Category = "SIOJ|Json")
 	TArray<uint8> AsBinary();
 
 	UFUNCTION(BlueprintCallable, Category = "SIOJ|Json")

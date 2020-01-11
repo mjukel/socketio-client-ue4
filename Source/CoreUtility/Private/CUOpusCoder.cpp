@@ -1,22 +1,27 @@
-#include "OpusCoder.h"
+#include "CUOpusCoder.h"
 #include "CoreMinimal.h"
 
 #define DEBUG_OPUS_LOG 0
 
-FOpusCoder::FOpusCoder()
+FCUOpusCoder::FCUOpusCoder()
 {
+#if WITH_OPUS
 	Encoder = nullptr;
 	Decoder = nullptr;
+#endif
 	SampleRate = 16000;
 	Channels = 1;
 	BitRate = 24000;
 	MaxPacketSize = (3 * 1276);
 	SetFrameSizeMs(60);
-	bApplicationVoip = false;
+	bResetBetweenEncoding = true;
+	bApplicationVoip = true;
+	bLowestPossibleLatency = false;
 }
 
-FOpusCoder::~FOpusCoder()
+FCUOpusCoder::~FCUOpusCoder()
 {
+#if WITH_OPUS
 	if (Encoder)
 	{
 		opus_encoder_destroy(Encoder);
@@ -27,28 +32,29 @@ FOpusCoder::~FOpusCoder()
 		opus_decoder_destroy(Decoder);
 		Decoder = nullptr;
 	}
+#endif
 }
 
-void FOpusCoder::SetSampleRate(int32 InSamplesPerSec)
+void FCUOpusCoder::SetSampleRate(int32 InSamplesPerSec)
 {
 	SampleRate = InSamplesPerSec;
 	SetFrameSizeMs(FrameSizeMs);
 	ResetCoderIfInitialized();
 }
 
-void FOpusCoder::SetChannels(int32 InChannels)
+void FCUOpusCoder::SetChannels(int32 InChannels)
 {
 	Channels = InChannels;
 	ResetCoderIfInitialized();
 }
 
-void FOpusCoder::SetBitrate(int32 InBitrate)
+void FCUOpusCoder::SetBitrate(int32 InBitrate)
 {
 	BitRate = InBitrate;
 	ResetCoderIfInitialized();
 }
 
-void FOpusCoder::SetFrameSizeMs(int32 Ms)
+void FCUOpusCoder::SetFrameSizeMs(int32 Ms)
 {
 	FrameSizeMs = Ms;
 	FrameSize = (SampleRate * FrameSizeMs) / 1000;
@@ -56,12 +62,17 @@ void FOpusCoder::SetFrameSizeMs(int32 Ms)
 	ResetCoderIfInitialized();
 }
 
-bool FOpusCoder::EncodeStream(const TArray<uint8>& InPCMBytes, TArray<uint8>& OutCompressed, TArray<int32>& OutCompressedFrameSizes)
+bool FCUOpusCoder::EncodeStream(const TArray<uint8>& InPCMBytes, FCUOpusMinimalStream& OutStream)
 {
+	if (bResetBetweenEncoding)
+	{
+		ResetCoderIfInitialized();
+	}
 	if (!InitEncoderIfNeeded())
 	{
 		return false;
 	}
+#if WITH_OPUS
 
 #if DEBUG_OPUS_LOG
 	DebugLogEncoder();
@@ -101,27 +112,30 @@ bool FOpusCoder::EncodeStream(const TArray<uint8>& InPCMBytes, TArray<uint8>& Ou
 			UE_LOG(LogTemp, Warning, TEXT("opus_encode err: %s"), opus_strerror(EncodedBytes));
 			return false;
 		}
-		OutCompressed.Append(TempBuffer.GetData(), EncodedBytes);
+		OutStream.CompressedBytes.Append(TempBuffer.GetData(), EncodedBytes);
 
-		OutCompressedFrameSizes.Add(EncodedBytes);
+		OutStream.PacketSizes.Add(EncodedBytes);
 		Offset += BytesPerFrame;
 		BytesLeft -= BytesPerFrame;
 		BytesWritten += EncodedBytes;
 	}
 
 #if DEBUG_OPUS_LOG
-	UE_LOG(LogTemp, Log, TEXT("Total packets encoded: %d, total bytes: %d=%d"), OutCompressedFrameSizes.Num(), BytesWritten, OutCompressed.Num());
+	UE_LOG(LogTemp, Log, TEXT("Total packets encoded: %d, total bytes: %d=%d"), OutStream.PacketSizes.Num(), BytesWritten, OutStream.CompressedBytes.Num());
 #endif
+
+#endif //with opus
 
 	return true;
 }
 
-bool FOpusCoder::DecodeStream(const TArray<uint8>& InCompressedBytes, const TArray<int32>& CompressedFrameSizes, TArray<uint8>& OutPCMFrame)
+bool FCUOpusCoder::DecodeStream(const FCUOpusMinimalStream& InStream, TArray<uint8>& OutPCMFrame)
 {	
 	if (!InitDecoderIfNeeded())
 	{
 		return false;
 	}
+#if WITH_OPUS
 
 #if DEBUG_OPUS_LOG
 	DebugLogDecoder();
@@ -134,13 +148,13 @@ bool FOpusCoder::DecodeStream(const TArray<uint8>& InCompressedBytes, const TArr
 
 	int32 CompressedOffset = 0;
 
-	for (int FrameIndex = 0; CompressedOffset < InCompressedBytes.Num(); FrameIndex++)
+	for (int FrameIndex = 0; CompressedOffset < InStream.CompressedBytes.Num(); FrameIndex++)
 	{
 
-		int32 DecodedSamples = opus_decode(Decoder, InCompressedBytes.GetData() + CompressedOffset, CompressedFrameSizes[FrameIndex], (opus_int16*)TempBuffer.GetData(), FrameSize, 0);
+		int32 DecodedSamples = opus_decode(Decoder, InStream.CompressedBytes.GetData() + CompressedOffset, InStream.PacketSizes[FrameIndex], (opus_int16*)TempBuffer.GetData(), FrameSize, 0);
 
 #if DEBUG_OPUS_LOG
-		DebugLogFrame(InCompressedBytes.GetData(), CompressedFrameSizes[FrameIndex], SampleRate, false);
+		DebugLogFrame(InStream.CompressedBytes.GetData(), InStream.PacketSizes[FrameIndex], SampleRate, false);
 		UE_LOG(LogTemp, Log, TEXT("Decoded Samples: %d"), DecodedSamples);
 #endif
 
@@ -154,11 +168,13 @@ bool FOpusCoder::DecodeStream(const TArray<uint8>& InCompressedBytes, const TArr
 			return false;
 		}
 
-		CompressedOffset += CompressedFrameSizes[FrameIndex];
+		CompressedOffset += InStream.PacketSizes[FrameIndex];
 	}
 
 #if DEBUG_OPUS_LOG
 	UE_LOG(LogTemp, Log, TEXT("decoded into %d bytes"), OutPCMFrame.Num());
+#endif
+
 #endif
 	return true;
 }
@@ -171,51 +187,62 @@ static void WriteUInt32ToByteArrayLE(TArray<uint8>& InByteArray, int32& Index, c
 	InByteArray[Index++] = (uint8)(Value >> 24);
 }
 
-bool FOpusCoder::SerializeMinimal(const TArray<uint8>& CompressedBytes, const TArray<int32>& CompressedFrameSizes, TArray<uint8>& OutSerializedBytes)
+bool FCUOpusCoder::SerializeMinimal(const FCUOpusMinimalStream& InStream, TArray<uint8>& OutSerializedBytes)
 {
-	OutSerializedBytes.SetNumUninitialized(sizeof(int32) + (CompressedFrameSizes.Num() * sizeof(int32)) + CompressedBytes.Num());
+	//Preset array size
+	OutSerializedBytes.SetNumUninitialized(sizeof(int32) + (InStream.PacketSizes.Num() * sizeof(int16)) + InStream.CompressedBytes.Num());
 	
 	//Write total number of packets as int32 first
 	int32 Index = 0;
-	WriteUInt32ToByteArrayLE(OutSerializedBytes, Index, CompressedFrameSizes.Num());
+	WriteUInt32ToByteArrayLE(OutSerializedBytes, Index, InStream.PacketSizes.Num());
 
 	//write the compressed frame sizes
-	FMemory::Memcpy(&OutSerializedBytes[sizeof(int32)], CompressedFrameSizes.GetData(), CompressedFrameSizes.Num() * sizeof(int32));
+	int32 Offset = sizeof(int32);
+	FMemory::Memcpy(&OutSerializedBytes[Offset], InStream.PacketSizes.GetData(), InStream.PacketSizes.Num() * sizeof(int16));
 
 	//write the compressed bytes
-	FMemory::Memcpy(&OutSerializedBytes[sizeof(int32)*(1 + CompressedFrameSizes.Num())], CompressedBytes.GetData(), CompressedBytes.Num());
+	Offset += (InStream.PacketSizes.Num() * sizeof(int16));
+	FMemory::Memcpy(&OutSerializedBytes[Offset], InStream.CompressedBytes.GetData(), InStream.CompressedBytes.Num());
 
 	return true;
 }
 
-bool FOpusCoder::DeserializeMinimal(const TArray<uint8>& InSerializedMinimalBytes, TArray<uint8>& OutCompressedBytes, TArray<int32>& OutCompressedFrameSizes)
+bool FCUOpusCoder::DeserializeMinimal(const TArray<uint8>& InSerializedMinimalBytes, FCUOpusMinimalStream& OutStream)
 {
 	int32 PacketCount = InSerializedMinimalBytes[0];
 
 	//get our packet info
-	OutCompressedFrameSizes.SetNumUninitialized(PacketCount);
-	FMemory::Memcpy(OutCompressedFrameSizes.GetData(), &InSerializedMinimalBytes[sizeof(int32)], PacketCount*sizeof(int32));
+	OutStream.PacketSizes.SetNumUninitialized(PacketCount);
+	int32 Offset = sizeof(int32);
+	FMemory::Memcpy(OutStream.PacketSizes.GetData(), &InSerializedMinimalBytes[Offset], PacketCount*sizeof(int16));
 
 	//get our compressed data
-	int32 RemainingBytes = InSerializedMinimalBytes.Num() - ((PacketCount + 1) * sizeof(int32));
-	OutCompressedBytes.Append(&InSerializedMinimalBytes[(1 + PacketCount) * sizeof(int32)], RemainingBytes);
+	Offset += ((PacketCount) * sizeof(int16));
+	int32 RemainingBytes = InSerializedMinimalBytes.Num() - Offset;
+	OutStream.CompressedBytes.Append(&InSerializedMinimalBytes[Offset], RemainingBytes);
 	
 	return true;
 }
 
-int32 FOpusCoder::EncodeFrame(const TArray<uint8>& InPCMFrame, TArray<uint8>& OutCompressed)
+int32 FCUOpusCoder::EncodeFrame(const TArray<uint8>& InPCMFrame, TArray<uint8>& OutCompressed)
 {
+#if WITH_OPUS
 	return opus_encode(Encoder, (const opus_int16*)InPCMFrame.GetData(), FrameSize, OutCompressed.GetData(), MaxPacketSize);
+#endif
 }
 
-int32 FOpusCoder::DecodeFrame(const TArray<uint8>& InCompressedFrame, TArray<uint8>& OutPCMFrame)
+int32 FCUOpusCoder::DecodeFrame(const TArray<uint8>& InCompressedFrame, TArray<uint8>& OutPCMFrame)
 {
+#if WITH_OPUS
 	return opus_decode(Decoder, InCompressedFrame.GetData(), InCompressedFrame.Num(), (opus_int16*)OutPCMFrame.GetData(), FrameSize, 0);
+#endif
 }
 
 
-bool FOpusCoder::InitEncoderIfNeeded()
+bool FCUOpusCoder::InitEncoderIfNeeded()
 {
+#if WITH_OPUS
+
 	if (!Encoder)
 	{
 		int32 ErrorCode;
@@ -225,6 +252,10 @@ bool FOpusCoder::InitEncoderIfNeeded()
 			if (bApplicationVoip)
 			{
 				ApplicationCode = OPUS_APPLICATION_VOIP;
+			}
+			if (bLowestPossibleLatency)
+			{
+				ApplicationCode = OPUS_APPLICATION_RESTRICTED_LOWDELAY;
 			}
 			Encoder = opus_encoder_create(SampleRate, Channels, ApplicationCode, &ErrorCode);
 			if (ErrorCode < 0)
@@ -242,11 +273,14 @@ bool FOpusCoder::InitEncoderIfNeeded()
 			*/
 		}
 	}
+
+#endif
 	return true;
 }
 
-bool FOpusCoder::InitDecoderIfNeeded()
+bool FCUOpusCoder::InitDecoderIfNeeded()
 {
+#if WITH_OPUS
 	if (!Decoder)
 	{
 		int32 ErrorCode;
@@ -257,11 +291,13 @@ bool FOpusCoder::InitDecoderIfNeeded()
 			return false;
 		}
 	}
+#endif
 	return true;
 }
 
-void FOpusCoder::ResetCoderIfInitialized()
+void FCUOpusCoder::ResetCoderIfInitialized()
 {
+#if WITH_OPUS
 	if (Encoder)
 	{
 		opus_encoder_destroy(Encoder);
@@ -274,11 +310,13 @@ void FOpusCoder::ResetCoderIfInitialized()
 		Decoder = nullptr;
 		InitDecoderIfNeeded();
 	}
+#endif
 }
 
 //Debug utilities
-void FOpusCoder::DebugLogEncoder()
+void FCUOpusCoder::DebugLogEncoder()
 {
+#if WITH_OPUS
 	int32 ErrCode = 0;
 	int32 BitRateLocal = 0;
 	int32 Vbr = 0;
@@ -301,10 +339,12 @@ void FOpusCoder::DebugLogEncoder()
 	UE_LOG(LogTemp, Log, TEXT("- SampleRate: %d"), SampleRateLocal);
 	UE_LOG(LogTemp, Log, TEXT("- Vbr: %d"), Vbr);
 	UE_LOG(LogTemp, Log, TEXT("- Complexity: %d"), Complexity);
+#endif
 }
 
-void FOpusCoder::DebugLogDecoder()
+void FCUOpusCoder::DebugLogDecoder()
 {
+#if WITH_OPUS
 	int32 ErrCode = 0;
 	int32 Gain = 0;
 	int32 Pitch = 0;
@@ -315,10 +355,12 @@ void FOpusCoder::DebugLogDecoder()
 	UE_LOG(LogTemp, Log, TEXT("Opus Decoder Details"));
 	UE_LOG(LogTemp, Log, TEXT("- Gain: %d"), Gain);
 	UE_LOG(LogTemp, Log, TEXT("- Pitch: %d"), Pitch);
+#endif
 }
 
-void FOpusCoder::DebugLogFrame(const uint8* PacketData, uint32 PacketLength, uint32 InSampleRate, bool bEncode)
+void FCUOpusCoder::DebugLogFrame(const uint8* PacketData, uint32 PacketLength, uint32 InSampleRate, bool bEncode)
 {
+#if WITH_OPUS
 	// Frame Encoding see http://tools.ietf.org/html/rfc6716#section-3.1
 	int32 NumFrames = opus_packet_get_nb_frames(PacketData, PacketLength);
 	if (NumFrames == OPUS_BAD_ARG || NumFrames == OPUS_INVALID_PACKET)
@@ -379,5 +421,6 @@ void FOpusCoder::DebugLogFrame(const uint8* PacketData, uint32 PacketLength, uin
 		UE_LOG(LogTemp, Log, TEXT("PacketLength: %d NumFrames: %d NumSamples: %d Bandwidth: %s Encoding: %d Stereo: %d FrameDesc: %d"),
 			PacketLength, NumFrames, NumSamples, BandwidthStr, TOCEncoding, TOCStereo, TOCMode);
 	}
+#endif
 }
 

@@ -1,10 +1,9 @@
 // Copyright 2018-current Getnamo. All Rights Reserved
 
 
-#include "CoreUtilityBPLibrary.h"
+#include "CUBlueprintLibrary.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
-#include "LambdaRunnable.h"
 #include "Runtime/Core/Public/Modules/ModuleManager.h"
 #include "Runtime/Core/Public/Async/Async.h"
 #include "Runtime/Engine/Classes/Engine/Texture2D.h"
@@ -16,7 +15,9 @@
 #include "Developer/TargetPlatform/Public/Interfaces/IAudioFormat.h"
 #include "CoreMinimal.h"
 #include "Engine/Engine.h"
-#include "OpusCoder.h"
+#include "CULambdaRunnable.h"
+#include "CUOpusCoder.h"
+#include "CUMeasureTimer.h"
 
 #pragma warning( push )
 #pragma warning( disable : 5046)
@@ -31,21 +32,21 @@ struct FUpdateTextureData
 	TSharedPtr<IImageWrapper> Wrapper;	//to keep the uncompressed data alive
 };
 
-FString UCoreUtilityBPLibrary::Conv_BytesToString(const TArray<uint8>& InArray)
+FString UCUBlueprintLibrary::Conv_BytesToString(const TArray<uint8>& InArray)
 {
 	FString ResultString;
 	FFileHelper::BufferToString(ResultString, InArray.GetData(), InArray.Num());
 	return ResultString;
 }
 
-TArray<uint8> UCoreUtilityBPLibrary::Conv_StringToBytes(FString InString)
+TArray<uint8> UCUBlueprintLibrary::Conv_StringToBytes(FString InString)
 {
 	TArray<uint8> ResultBytes;
 	ResultBytes.Append((uint8*)TCHAR_TO_UTF8(*InString), InString.Len());
 	return ResultBytes;
 }
 
-UTexture2D* UCoreUtilityBPLibrary::Conv_BytesToTexture(const TArray<uint8>& InBytes)
+UTexture2D* UCUBlueprintLibrary::Conv_BytesToTexture(const TArray<uint8>& InBytes)
 {
 	//Convert the UTexture2D back to an image
 	UTexture2D* Texture = nullptr;
@@ -63,7 +64,7 @@ UTexture2D* UCoreUtilityBPLibrary::Conv_BytesToTexture(const TArray<uint8>& InBy
 		Texture->UpdateResource();
 
 		//Uncompress on a background thread pool
-		FLambdaRunnable::RunLambdaOnBackGroundThreadPool([ImageWrapper, Texture] {
+		FCULambdaRunnable::RunLambdaOnBackGroundThreadPool([ImageWrapper, Texture] {
 			const TArray<uint8>* UncompressedBGRA = nullptr;
 			if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, UncompressedBGRA))
 			{
@@ -100,10 +101,12 @@ UTexture2D* UCoreUtilityBPLibrary::Conv_BytesToTexture(const TArray<uint8>& InBy
 }
 
 //one static coder, created based on need
-TSharedPtr<FOpusCoder> OpusCoder;
+TSharedPtr<FCUOpusCoder> OpusCoder;
 
-TArray<uint8> UCoreUtilityBPLibrary::Conv_OpusBytesToWav(const TArray<uint8>& InBytes)
+TArray<uint8> UCUBlueprintLibrary::Conv_OpusBytesToWav(const TArray<uint8>& InBytes)
 {
+	//FCUScopeTimer Timer(TEXT("Conv_OpusBytesToWav"));
+
 	TArray<uint8> WavBytes;
 	//Early exit condition
 	if (InBytes.Num() == 0) 
@@ -112,27 +115,31 @@ TArray<uint8> UCoreUtilityBPLibrary::Conv_OpusBytesToWav(const TArray<uint8>& In
 	}
 	if (!OpusCoder)
 	{
-		OpusCoder = MakeShareable(new FOpusCoder());
+		OpusCoder = MakeShareable(new FCUOpusCoder());
 	}
 
-	TArray<uint8> OpusBytes;
 	TArray<uint8> PCMBytes;
-	TArray<int32> CompressedFrameSizes;
-	OpusCoder->DeserializeMinimal(InBytes, OpusBytes, CompressedFrameSizes);
-	OpusCoder->DecodeStream(OpusBytes, CompressedFrameSizes, PCMBytes);
-
-	
-	SerializeWaveFile(WavBytes, PCMBytes.GetData(), PCMBytes.Num(), OpusCoder->Channels, OpusCoder->SampleRate);
+	FCUOpusMinimalStream OpusStream;
+	OpusCoder->DeserializeMinimal(InBytes, OpusStream);
+	if (OpusCoder->DecodeStream(OpusStream, PCMBytes))
+	{
+		SerializeWaveFile(WavBytes, PCMBytes.GetData(), PCMBytes.Num(), OpusCoder->Channels, OpusCoder->SampleRate);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("OpusMinimal to Wave Failed. DecodeStream returned false"));
+	}
 
 	return WavBytes;
 }
 
-TArray<uint8> UCoreUtilityBPLibrary::Conv_WavBytesToOpus(const TArray<uint8>& InBytes)
+TArray<uint8> UCUBlueprintLibrary::Conv_WavBytesToOpus(const TArray<uint8>& InBytes)
 {
+	//FCUScopeTimer Timer(TEXT("Conv_WavBytesToOpus"));
+
 	TArray<uint8> OpusBytes;
 
 	FWaveModInfo WaveInfo;
-
 
 	if (!WaveInfo.ReadWaveInfo(InBytes.GetData(), InBytes.Num()))
 	{
@@ -141,22 +148,22 @@ TArray<uint8> UCoreUtilityBPLibrary::Conv_WavBytesToOpus(const TArray<uint8>& In
 
 	if (!OpusCoder)
 	{
-		OpusCoder = MakeShareable(new FOpusCoder());
+		OpusCoder = MakeShareable(new FCUOpusCoder());
 	}
 
-	TArray<uint8> PCMBytes;
-	PCMBytes.Append(WaveInfo.SampleDataStart, WaveInfo.SampleDataSize);
+	TArray<uint8> PCMBytes = TArray<uint8>(WaveInfo.SampleDataStart, WaveInfo.SampleDataSize);
 
-	TArray<int32> CompressedFrameSizes;
-	OpusCoder->EncodeStream(PCMBytes, OpusBytes, CompressedFrameSizes);
+	FCUOpusMinimalStream OpusStream;
+
+	OpusCoder->EncodeStream(PCMBytes, OpusStream);
 
 	TArray<uint8> SerializedBytes;
-	OpusCoder->SerializeMinimal(OpusBytes, CompressedFrameSizes, SerializedBytes);
+	OpusCoder->SerializeMinimal(OpusStream, SerializedBytes);
 
 	return SerializedBytes;
 }
 
-USoundWave* UCoreUtilityBPLibrary::Conv_WavBytesToSoundWave(const TArray<uint8>& InBytes)
+USoundWave* UCUBlueprintLibrary::Conv_WavBytesToSoundWave(const TArray<uint8>& InBytes)
 {
 	USoundWave* SoundWave;
 
@@ -190,7 +197,7 @@ USoundWave* UCoreUtilityBPLibrary::Conv_WavBytesToSoundWave(const TArray<uint8>&
 	return SoundWave;
 }
 
-TArray<uint8> UCoreUtilityBPLibrary::Conv_SoundWaveToWavBytes(USoundWave* SoundWave)
+TArray<uint8> UCUBlueprintLibrary::Conv_SoundWaveToWavBytes(USoundWave* SoundWave)
 {
 	TArray<uint8> PCMBytes;
 	TArray<uint8> WavBytes;
@@ -207,11 +214,12 @@ TArray<uint8> UCoreUtilityBPLibrary::Conv_SoundWaveToWavBytes(USoundWave* SoundW
 	return WavBytes;
 }
 
-void UCoreUtilityBPLibrary::SetSoundWaveFromWavBytes(USoundWaveProcedural* InSoundWave, const TArray<uint8>& InBytes)
+void UCUBlueprintLibrary::SetSoundWaveFromWavBytes(USoundWaveProcedural* InSoundWave, const TArray<uint8>& InBytes)
 {
 	FWaveModInfo WaveInfo;
 
-	if (WaveInfo.ReadWaveInfo(InBytes.GetData(), InBytes.Num()))
+	FString ErrorReason;
+	if (WaveInfo.ReadWaveInfo(InBytes.GetData(), InBytes.Num(), &ErrorReason))
 	{
 		//copy header info
 		int32 DurationDiv = *WaveInfo.pChannels * *WaveInfo.pBitsPerSample * *WaveInfo.pSamplesPerSec;
@@ -233,9 +241,13 @@ void UCoreUtilityBPLibrary::SetSoundWaveFromWavBytes(USoundWaveProcedural* InSou
 		//Queue actual audio data
 		InSoundWave->QueueAudio(WaveInfo.SampleDataStart, WaveInfo.SampleDataSize);
 	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("SetSoundWaveFromWavBytes::WaveRead error: %s"), *ErrorReason);
+	}
 }
 
-TFuture<UTexture2D*> UCoreUtilityBPLibrary::Conv_BytesToTexture_Async(const TArray<uint8>& InBytes)
+TFuture<UTexture2D*> UCUBlueprintLibrary::Conv_BytesToTexture_Async(const TArray<uint8>& InBytes)
 {
 	//Running this on a background thread
 #if ENGINE_MINOR_VERSION < 23
@@ -326,7 +338,7 @@ TFuture<UTexture2D*> UCoreUtilityBPLibrary::Conv_BytesToTexture_Async(const TArr
 	});//End async
 }
 
-bool UCoreUtilityBPLibrary::Conv_TextureToBytes(UTexture2D* Texture, TArray<uint8>& OutBuffer, EImageFormatBPType Format /*= EImageFormatBPType::JPEG*/)
+bool UCUBlueprintLibrary::Conv_TextureToBytes(UTexture2D* Texture, TArray<uint8>& OutBuffer, EImageFormatBPType Format /*= EImageFormatBPType::JPEG*/)
 {
 	if (!Texture || !Texture->IsValidLowLevel())
 	{
@@ -353,17 +365,27 @@ bool UCoreUtilityBPLibrary::Conv_TextureToBytes(UTexture2D* Texture, TArray<uint
 	return true;
 }
 
-FString UCoreUtilityBPLibrary::NowUTCString()
+FString UCUBlueprintLibrary::NowUTCString()
 {
 	return FDateTime::UtcNow().ToString();
 }
 
-FString UCoreUtilityBPLibrary::GetLoginId()
+FString UCUBlueprintLibrary::GetLoginId()
 {
 	return FPlatformMisc::GetLoginId();
 }
 
-void UCoreUtilityBPLibrary::CallFunctionOnThread(const FString& FunctionName, ESIOCallbackType ThreadType, UObject* WorldContextObject /*= nullptr*/)
+void UCUBlueprintLibrary::MeasureTimerStart(const FString& Category /*= TEXT("TimeTaken")*/)
+{
+	FCUMeasureTimer::Tick(Category);
+}
+
+float UCUBlueprintLibrary::MeasureTimerStop(const FString& Category /*= TEXT("TimeTaken")*/, bool bShouldLogResult /*= true*/)
+{
+	return (float)FCUMeasureTimer::Tock(Category, bShouldLogResult);
+}
+
+void UCUBlueprintLibrary::CallFunctionOnThread(const FString& FunctionName, ESIOCallbackType ThreadType, UObject* WorldContextObject /*= nullptr*/)
 {
 	UObject* Target = WorldContextObject;
 
@@ -389,7 +411,7 @@ void UCoreUtilityBPLibrary::CallFunctionOnThread(const FString& FunctionName, ES
 		}
 		else
 		{
-			FLambdaRunnable::RunShortLambdaOnGameThread([Function, Target]
+			FCULambdaRunnable::RunShortLambdaOnGameThread([Function, Target]
 			{
 				if (Target->IsValidLowLevel())
 				{
@@ -399,7 +421,7 @@ void UCoreUtilityBPLibrary::CallFunctionOnThread(const FString& FunctionName, ES
 		}
 		break;
 	case CALLBACK_BACKGROUND_THREADPOOL:
-		FLambdaRunnable::RunLambdaOnBackGroundThreadPool([Function, Target]
+		FCULambdaRunnable::RunLambdaOnBackGroundThreadPool([Function, Target]
 		{
 			if (Target->IsValidLowLevel())
 			{
@@ -408,11 +430,76 @@ void UCoreUtilityBPLibrary::CallFunctionOnThread(const FString& FunctionName, ES
 		});
 		break;
 	case CALLBACK_BACKGROUND_TASKGRAPH:
-		FLambdaRunnable::RunShortLambdaOnBackGroundTask([Function, Target]
+		FCULambdaRunnable::RunShortLambdaOnBackGroundTask([Function, Target]
 		{
 			if (Target->IsValidLowLevel())
 			{
 				Target->ProcessEvent(Function, nullptr);
+			}
+		});
+		break;
+	default:
+		break;
+	}
+}
+
+void UCUBlueprintLibrary::CallFunctionOnThreadGraphReturn(const FString& FunctionName, ESIOCallbackType ThreadType, struct FLatentActionInfo LatentInfo, UObject* WorldContextObject /*= nullptr*/)
+{
+	UObject* Target = WorldContextObject;
+	FCULatentAction* LatentAction = FCULatentAction::CreateLatentAction(LatentInfo, Target);
+
+	if (!Target->IsValidLowLevel())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CallFunctionOnThread: Target not found for '%s'"), *FunctionName);
+		LatentAction->Call();
+		return;
+	}
+
+	UFunction* Function = Target->FindFunction(FName(*FunctionName));
+	if (nullptr == Function)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CallFunctionOnThread: Function not found '%s'"), *FunctionName);
+		LatentAction->Call();
+		return;
+	}
+
+	switch (ThreadType)
+	{
+	case CALLBACK_GAME_THREAD:
+		if (IsInGameThread())
+		{
+			Target->ProcessEvent(Function, nullptr);
+			LatentAction->Call();
+		}
+		else
+		{
+			FCULambdaRunnable::RunShortLambdaOnGameThread([Function, Target, LatentAction]
+			{
+				if (Target->IsValidLowLevel())
+				{
+					Target->ProcessEvent(Function, nullptr);
+					LatentAction->Call();
+				}
+			});
+		}
+		break;
+	case CALLBACK_BACKGROUND_THREADPOOL:
+		FCULambdaRunnable::RunLambdaOnBackGroundThreadPool([Function, Target, LatentAction]
+		{
+			if (Target->IsValidLowLevel())
+			{
+				Target->ProcessEvent(Function, nullptr);
+				LatentAction->Call();
+			}
+		});
+		break;
+	case CALLBACK_BACKGROUND_TASKGRAPH:
+		FCULambdaRunnable::RunShortLambdaOnBackGroundTask([Function, Target, LatentAction]
+		{
+			if (Target->IsValidLowLevel())
+			{
+				Target->ProcessEvent(Function, nullptr);
+				LatentAction->Call();
 			}
 		});
 		break;

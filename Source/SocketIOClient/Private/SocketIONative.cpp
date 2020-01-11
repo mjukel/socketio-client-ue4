@@ -3,7 +3,7 @@
 
 #include "SocketIONative.h"
 #include "SIOMessageConvert.h"
-#include "LambdaRunnable.h"
+#include "CULambdaRunnable.h"
 #include "SIOJConvert.h"
 #include "sio_client.h"
 #include "sio_message.h"
@@ -34,7 +34,7 @@ void FSocketIONative::Connect(const FString& InAddressAndPort, const TSharedPtr<
 	}
 
 	//Connect to the server on a background thread so it never blocks
-	FLambdaRunnable::RunLambdaOnBackGroundThread([&, Query, Headers]
+	FCULambdaRunnable::RunLambdaOnBackGroundThread([&, StdAddressString, Query, Headers]
 	{
 		std::map<std::string, std::string> QueryMap = {};
 		std::map<std::string, std::string> HeadersMap = {};
@@ -53,12 +53,22 @@ void FSocketIONative::Connect(const FString& InAddressAndPort, const TSharedPtr<
 		PrivateClient->set_reconnect_attempts(MaxReconnectionAttempts);
 		PrivateClient->set_reconnect_delay(ReconnectionDelay);
 
+		//close and reconnect if different url
 		if(PrivateClient->opened())
 		{
+			if (PrivateClient->get_url() != StdAddressString)
+			{
+				//sync close to re-open
+				PrivateClient->sync_close();
+			}
+			else
+			{
+				//we're already connected to the correct endpoint, ignore request
+				UE_LOG(SocketIOLog, Warning, TEXT("Attempted to connect to %s when we're already connected. Request ignored."), UTF8_TO_TCHAR(StdAddressString.c_str()));
+				return;
+			}
 		}
-
 		PrivateClient->connect(StdAddressString, QueryMap, HeadersMap);
-
 	});
 
 }
@@ -69,6 +79,17 @@ void FSocketIONative::Connect(const FString& InAddressAndPort)
 	TSharedPtr<FJsonObject> Headers = MakeShareable(new FJsonObject);
 
 	Connect(InAddressAndPort, Query, Headers);
+}
+
+void FSocketIONative::JoinNamespace(const FString& Namespace)
+{
+	//just referencing the namespace will join it
+	PrivateClient->socket(USIOMessageConvert::StdString(Namespace));
+}
+
+void FSocketIONative::LeaveNamespace(const FString& Namespace)
+{
+	PrivateClient->socket(USIOMessageConvert::StdString(Namespace))->close();
 }
 
 void FSocketIONative::Disconnect()
@@ -197,7 +218,7 @@ void FSocketIONative::EmitRaw(const FString& EventName, const sio::message::list
 				//Callback on game thread
 				if (bCallbackOnGameThread)
 				{
-					FLambdaRunnable::RunShortLambdaOnGameThread([&, CallbackFunction, response]
+					FCULambdaRunnable::RunShortLambdaOnGameThread([&, CallbackFunction, response]
 					{
 						if (CallbackFunction)
 						{
@@ -273,7 +294,7 @@ void FSocketIONative::OnRawEvent(const FString& EventName,
 
 		if (bCallbackThisEventOnGameThread)
 		{
-			FLambdaRunnable::RunShortLambdaOnGameThread([&, SafeFunction, SafeName, data]
+			FCULambdaRunnable::RunShortLambdaOnGameThread([&, SafeFunction, SafeName, data]
 			{
 				SafeFunction(SafeName, data);
 			});
@@ -306,7 +327,7 @@ void FSocketIONative::OnBinaryEvent(const FString& EventName, TFunction< void(co
 
 			if (bCallbackOnGameThread)
 			{
-				FLambdaRunnable::RunShortLambdaOnGameThread([&, SafeFunction, SafeName, Buffer]
+				FCULambdaRunnable::RunShortLambdaOnGameThread([&, SafeFunction, SafeName, Buffer]
 				{
 					SafeFunction(SafeName, Buffer);
 				});
@@ -353,7 +374,7 @@ void FSocketIONative::SetupInternalCallbacks()
 		{
 			if (bCallbackOnGameThread)
 			{
-				FLambdaRunnable::RunShortLambdaOnGameThread([&, DisconnectReason]
+				FCULambdaRunnable::RunShortLambdaOnGameThread([&, DisconnectReason]
 				{
 					if (OnDisconnectedCallback)
 					{
@@ -390,7 +411,7 @@ void FSocketIONative::SetupInternalCallbacks()
 				if (bCallbackOnGameThread)
 				{
 					const FString SafeSessionId = SessionId;
-					FLambdaRunnable::RunShortLambdaOnGameThread([&, SafeSessionId]
+					FCULambdaRunnable::RunShortLambdaOnGameThread([&, SafeSessionId]
 					{
 						if (OnConnectedCallback)
 						{
@@ -415,7 +436,7 @@ void FSocketIONative::SetupInternalCallbacks()
 		{
 			if (bCallbackOnGameThread)
 			{
-				FLambdaRunnable::RunShortLambdaOnGameThread([&, Namespace]
+				FCULambdaRunnable::RunShortLambdaOnGameThread([&, Namespace]
 				{
 					if (OnNamespaceConnectedCallback)
 					{
@@ -446,7 +467,7 @@ void FSocketIONative::SetupInternalCallbacks()
 		{
 			if (bCallbackOnGameThread)
 			{
-				FLambdaRunnable::RunShortLambdaOnGameThread([&, Namespace]
+				FCULambdaRunnable::RunShortLambdaOnGameThread([&, Namespace]
 				{
 					if (OnNamespaceDisconnectedCallback)
 					{
@@ -471,7 +492,7 @@ void FSocketIONative::SetupInternalCallbacks()
 		{
 			if (bCallbackOnGameThread)
 			{
-				FLambdaRunnable::RunShortLambdaOnGameThread([&]
+				FCULambdaRunnable::RunShortLambdaOnGameThread([&]
 				{
 					if (OnFailCallback)
 					{
@@ -498,7 +519,7 @@ void FSocketIONative::SetupInternalCallbacks()
 		{
 			if (bCallbackOnGameThread)
 			{
-				FLambdaRunnable::RunShortLambdaOnGameThread([&, num, delay]
+				FCULambdaRunnable::RunShortLambdaOnGameThread([&, num, delay]
 				{
 					if (OnReconnectionCallback)
 					{
